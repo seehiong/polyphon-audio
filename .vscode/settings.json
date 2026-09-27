@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": ["scripts", "scripts/realtime"],
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv-tests",
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["tests"]
+}

@@ -1,0 +1,5 @@
+Hello. This is Polyphon Audio, a local voice persona engine.
+
+It turns text, or a reply from an LLM, into natural conversational speech, entirely offline.
+
+No cloud, no subscription. Just your own hardware.

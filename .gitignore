@@ -1,0 +1,12 @@
+vendor/
+outputs/
+.venv*/
+*.wav
+!examples/*.wav
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+voices.json
+voices/
+.env
+archive/

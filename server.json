@@ -1,0 +1,16 @@
+{
+  "host": "127.0.0.1", "port": 8091, "backend": "hip", "device": 0,
+  "threads": 4, "lazy_load": true, "max_loaded_models": 0,
+  "models": [
+    {"id": "chatterbox", "family": "chatterbox", "task": "clon", "mode": "offline",
+     "path": "models/Chatterbox-GGUF/chatterbox-q8_0.gguf"},
+    {"id": "nemotron-asr", "family": "nemotron_asr", "task": "asr", "mode": "offline",
+     "path": "models/Nemotron-3.5-ASR-Streaming-0.6B-GGUF/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf"},
+    {"id": "voice-design", "family": "qwen3_tts", "task": "vdes", "mode": "offline",
+     "path": "models/Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf"},
+    {"id": "sound-music", "family": "stable_audio", "task": "gen", "mode": "offline",
+     "path": "models/Stable-Audio-3-Small-Music-GGUF/stable-audio-3-small-music-q8_0.gguf"},
+    {"id": "sound-sfx", "family": "stable_audio", "task": "gen", "mode": "offline",
+     "path": "models/Stable-Audio-3-Small-SFX-GGUF/stable-audio-3-small-sfx-q8_0.gguf"}
+  ]
+}
