@@ -1,4 +1,4 @@
-"""Polyphon Audio Studio: a four-tab web UI on top of the same local
+"""Polyphon Audio Studio: a five-tab web UI on top of the same local
 services the rest of this project already uses.
 
 - **Live Chat** - the real-time voice loop from `scripts/realtime/bot_fastrtc.py`,
@@ -17,8 +17,10 @@ services the rest of this project already uses.
 - **Sound & Music** - short text-to-music or text-to-sound-effect clips
   (`audio.cpp`'s `stable_audio` family, task "gen" - see README
   "Quickstart"), for game audio, video stingers, or ambience.
+- **Models** - which of the above tabs' models `audiocpp_server` has loaded
+  right now, with buttons to unload the on-demand ones and free VRAM.
 
-All four tabs hit the same resident `audiocpp_server` (and, for Live Chat,
+All five tabs hit the same resident `audiocpp_server` (and, for Live Chat,
 the same local LLM) - nothing here starts a second copy of any model.
 Voices are a small on-disk registry (`voices/registry.json`), not a
 database - this is a single-user local tool, not a multi-tenant service.
@@ -340,6 +342,84 @@ def build_sound_tab(client: httpx.AsyncClient, audiocpp_url: str) -> None:
         )
 
 
+# Which tab needs which server.json model id. Live Chat's two are the only
+# ones worth keeping resident (server.json loads them at startup with
+# "lazy": false) - a cold load mid-conversation adds seconds to a turn. The
+# rest load on their tab's first use and can be unloaded from the Models tab
+# to hand VRAM back, e.g. before a Live Chat session on a small GPU.
+MODEL_USAGE = [
+    ("nemotron-asr", "Live Chat (speech recognition)", True),
+    ("chatterbox", "Live Chat, Text to Speech", True),
+    ("voice-design", "Voice Library (voice previews)", False),
+    ("sound-music", "Sound & Music (music)", False),
+    ("sound-sfx", "Sound & Music (sound effects)", False),
+]
+_ON_DEMAND_MODELS = [model_id for model_id, _, keep in MODEL_USAGE if not keep]
+
+
+def build_models_tab(client: httpx.AsyncClient, audiocpp_url: str):
+    """Shows which models audiocpp_server currently holds in memory and lets
+    the user unload them (`/v1/tasks/unload_models`). An unloaded model
+    reloads transparently on its next request, so this only ever trades
+    VRAM for a slower next use - never breaks a tab. Returns the table,
+    checkbox group, and the refresh function so main() can run it on page load.
+    """
+    with gr.Tab("Models"):
+        gr.Markdown(
+            "Which models are loaded in `audiocpp_server` right now. Live Chat's models stay "
+            "loaded so conversation turns stay fast; the rest load the first time their tab "
+            "is used and stay resident until unloaded here. Unloading is always safe - a model "
+            "reloads by itself (a few seconds) the next time something needs it."
+        )
+        table = gr.Dataframe(headers=["Model", "Used by", "Residency", "Status"], interactive=False)
+        refresh_btn = gr.Button("Refresh")
+        # Fixed choices, not just the loaded ones: Gradio validates a submitted
+        # value against the choices of the session that built it, and the
+        # server skips not-loaded ids anyway - the Status column says which are.
+        unload_select = gr.CheckboxGroup(label="Models to unload", choices=[m for m, _, _ in MODEL_USAGE])
+        with gr.Row():
+            unload_selected_btn = gr.Button("Unload selected")
+            unload_on_demand_btn = gr.Button("Unload all except Live Chat", variant="primary")
+        status = gr.Markdown()
+
+        async def refresh():
+            try:
+                resp = await client.get(f"{audiocpp_url}/v1/models")
+                resp.raise_for_status()
+                loaded = {m["id"]: m.get("loaded", False) for m in resp.json().get("data", [])}
+            except httpx.HTTPError as e:
+                rows = [[m, used, "", "?"] for m, used, _ in MODEL_USAGE]
+                return rows, gr.update(value=[]), f"Can't reach audiocpp_server at {audiocpp_url}: {e}"
+            rows = []
+            for model_id, used_by, keep in MODEL_USAGE:
+                if model_id not in loaded:
+                    state = "not in server.json"
+                else:
+                    state = "loaded" if loaded[model_id] else "not loaded"
+                rows.append([model_id, used_by, "always loaded" if keep else "on demand", state])
+            return rows, gr.update(value=[]), ""
+
+        async def unload(model_ids: list[str]):
+            if not model_ids:
+                rows, select_update, _ = await refresh()
+                return rows, select_update, "Nothing to unload."
+            resp = await client.post(f"{audiocpp_url}/v1/tasks/unload_models", json={"model_ids": model_ids})
+            resp.raise_for_status()
+            unloaded = resp.json().get("unloaded", [])
+            rows, select_update, error = await refresh()
+            message = f"Unloaded: {', '.join(unloaded)}." if unloaded else "Nothing was loaded - no change."
+            return rows, select_update, error or message
+
+        async def unload_on_demand():
+            return await unload(_ON_DEMAND_MODELS)
+
+        outputs = [table, unload_select, status]
+        refresh_btn.click(refresh, outputs=outputs)
+        unload_selected_btn.click(unload, inputs=[unload_select], outputs=outputs)
+        unload_on_demand_btn.click(unload_on_demand, outputs=outputs)
+    return table, unload_select, status, refresh
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="0.0.0.0")
@@ -382,6 +462,9 @@ def main() -> None:
                 client, args.audiocpp_url, [tts_voice_dd, live_chat_voice_dd]
             )
             build_sound_tab(client, args.audiocpp_url)
+            models_table, models_select, models_status, refresh_models = build_models_tab(
+                client, args.audiocpp_url
+            )
 
         # Every dropdown's choices= was fixed at Blocks-build time, so a
         # freshly-loaded/different browser tab wouldn't otherwise see a
@@ -393,9 +476,12 @@ def main() -> None:
             voices = _load_registry()
             dropdown_updates = [gr.update(choices=_voice_dropdown_choices(voices))] * len(voice_dropdowns)
             table_rows = [[v["label"], v["source"]] for v in voices]
-            return [*dropdown_updates, table_rows, await conversation.check_readiness()]
+            return [*dropdown_updates, table_rows, await conversation.check_readiness(), *await refresh_models()]
 
-        demo.load(refresh_all, outputs=[*voice_dropdowns, library_table, readiness_ui])
+        demo.load(
+            refresh_all,
+            outputs=[*voice_dropdowns, library_table, readiness_ui, models_table, models_select, models_status],
+        )
 
     launch_kwargs = {"server_name": args.host, "server_port": args.port}
     if args.self_signed:

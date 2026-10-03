@@ -27,8 +27,8 @@ dependency once the models are downloaded:
 - **A conversational voice-persona loop** — wire in a local LLM so the
   system can listen, think, and speak back in a chosen voice.
 - **A web UI** (`scripts/studio.py`) — Live Chat, Text to Speech, Voice
-  Library, and Sound & Music tabs, each with a downloadable clip, or use
-  the scripts directly.
+  Library, and Sound & Music tabs, each with a downloadable clip, plus a
+  Models tab to see and unload what's in VRAM - or use the scripts directly.
 
 Built on [`audio.cpp`](https://github.com/0xShug0/audio.cpp) (a native
 `ggml`-based inference engine, no Python runtime needed to run models),
@@ -120,6 +120,38 @@ vendor\audio.cpp\build\windows-cuda-release\bin\audiocpp_server.exe --config ven
 The model-spec messages may warn that some downloaded GGUFs contain legacy
 metadata. They are non-fatal when the server proceeds to `listening` as
 shown above; audio.cpp uses its current runtime contract for validation.
+
+**Which models each Studio tab uses.** Only Live Chat's two models are
+loaded at server start (`"lazy": false` in `server.json`), so the first
+conversation turn doesn't pay a multi-second model load. The rest load the
+first time their tab is used, then stay loaded until you unload them from
+the Studio's **Models** tab (an unloaded model reloads by itself on its next
+use, so unloading never breaks a tab). VRAM figures are measured on CUDA
+(q8_0 weights plus runtime buffers) with `scripts/bench_latency.py`. On the
+HIP backend (Linux/AMD), the same script's warm latency ran ~25-40% higher
+in testing (e.g. ~2.7-3.2s per sentence vs ~2.2s here) - expected, since
+`audio.cpp` itself is CUDA-optimized first. Its VRAM columns are not
+meaningful on a unified-memory AMD APU (Strix Halo/gfx1151 and similar):
+`rocm-smi` tracks a small fixed carve-out there, not the much larger
+system-RAM pool HIP actually allocates models from, so the deltas stay near
+zero regardless of what loaded.
+
+| `server.json` id | Used by | Loaded | VRAM | Warm latency |
+|---|---|---|---|---|
+| `nemotron-asr` | Live Chat (speech recognition) | always (at startup) | ~1.1 GB | <0.1 s for an 8 s clip |
+| `chatterbox` | Live Chat, Text to Speech | always (at startup) | ~2.4 GB | ~2.2 s per sentence |
+| `voice-design` | Voice Library (voice previews) | on demand | ~1.6 GB | ~4.6 s per preview |
+| `sound-music` | Sound & Music (music) | on demand | ~1.2 GB | ~0.4 s per 5 s clip |
+| `sound-sfx` | Sound & Music (sound effects) | on demand | ~1.2 GB | ~0.4 s per 5 s clip |
+
+All five together need about 7.5 GB, before the LLM. On a smaller GPU,
+unload the on-demand models before a Live Chat session ("Unload all except
+Live Chat"), and run the LLM on CPU if it doesn't fit alongside ASR and TTS.
+On Windows the NVIDIA driver does not fail when VRAM runs out: it silently
+spills into system RAM, and measured TTS latency went from ~2.5 s to
+30 s+ per sentence. audio.cpp's `max_loaded_models`, `idle_unload_ms`, and
+`min_free_memory_mb` settings can also enforce limits automatically - see
+its `app/server/README.md`.
 
 **3. Download and start a local LLM** (only needed for the conversational
 Live Chat feature, not for narration/voice cloning/TTS alone):
@@ -214,10 +246,11 @@ speaks a reply addressing people by name.
 | `scripts/persona_meeting.py` | Feeds a real `polyphon-ai` diarized transcript JSON (`{speakers, segments}`) into the local LLM and speaks its reply — the optional-integration diagram above made concrete. |
 | `scripts/narrate.py` | Multi-voice narration/dialogue, no LLM: authored `{"speaker": ..., "text": ...}` lines spoken by named voices from a `--voices` registry, stitched into one clip. |
 | `scripts/persona_tts.py` | Thin Chatterbox wrapper matching a conventional XTTS-synthesis CLI interface. |
+| `scripts/bench_latency.py` | Benchmarks the resident `audiocpp_server` stack: per-model cold vs warm latency and cumulative VRAM (`nvidia-smi`/`rocm-smi`), a full Live Chat turn (ASR → streamed LLM → first-sentence TTS, i.e. time to first audio), and ASR latency during an abandoned in-flight TTS request (barge-in). Stdlib only; results saved to `outputs/bench/`. On GPUs too small for the LLM plus audio models, run the LLM on CPU - on Windows the driver otherwise silently spills to system RAM and latency collapses. |
 | `scripts/record_mic.sh` | `arecord` wrapper (Linux/ALSA only) for capturing a real mic clip in the format `--prompt-audio` expects. On Windows, record a 16kHz mono WAV with any recorder instead. |
 | `scripts/setup_audiocpp.sh`, `scripts/setup_audiocpp.bat` | Clone, build, and install the models for `audio.cpp` (Linux AMD/ROCm or Windows CPU/CUDA/Vulkan — see "Quickstart" above). Re-runnable. |
 | `scripts/realtime/bot_fastrtc.py` | Live, real-time streaming voice conversation (FastRTC) — mic → VAD → `audiocpp_server` ASR → LLM → `audiocpp_server` TTS → speaker, with barge-in. `--self-signed` for local HTTPS. Requires the `.venv-fastrtc` venv (see "Quickstart" above). |
-| `scripts/studio.py` | A 4-tab web UI: Live Chat (imports and reuses `bot_fastrtc.py`'s loop, not a fork of it), Text to Speech (batch synthesis, downloadable clip), Voice Library (design a synthetic voice from a text description, save it, use it in the TTS tab), and Sound & Music (text-to-music/SFX clips via `audio.cpp`'s `stable_audio` family). Voices persist in `voices/registry.json` (gitignored). Also requires `.venv-fastrtc`, plus `audiocpp_server` configured with `voice-design` and `sound-music`/`sound-sfx` model entries (see "Quickstart" above). |
+| `scripts/studio.py` | A 5-tab web UI: Models (which `audiocpp_server` models are loaded, with unload buttons - see the table under "Quickstart" step 2), Live Chat (imports and reuses `bot_fastrtc.py`'s loop, not a fork of it), Text to Speech (batch synthesis, downloadable clip), Voice Library (design a synthetic voice from a text description, save it, use it in the TTS tab), and Sound & Music (text-to-music/SFX clips via `audio.cpp`'s `stable_audio` family). Voices persist in `voices/registry.json` (gitignored). Also requires `.venv-fastrtc`, plus `audiocpp_server` configured with `voice-design` and `sound-music`/`sound-sfx` model entries (see "Quickstart" above). |
 | `examples/` | Committed example assets — see `examples/README.md` for what each one is and why. |
 | `tests/` | `pytest` coverage for the pure-logic pieces that don't need the GPU, `audio.cpp`, or a running LLM server. Linux/macOS: `uv venv .venv-tests --python 3.12 && uv pip install --python .venv-tests/bin/python pytest && .venv-tests/bin/pytest tests/`. Windows PowerShell: `uv venv .venv-tests --python 3.12; uv pip install --python .venv-tests\Scripts\python.exe pytest; .venv-tests\Scripts\pytest.exe tests\`. |
 | `ruff.toml` | Lint config (`uvx ruff check scripts/ tests/` — no project-wide install needed). |
